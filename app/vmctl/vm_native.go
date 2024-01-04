@@ -186,53 +186,19 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 
 	fmt.Println("") // extra line for better output formatting
 	log.Printf(initMessage, initParams...)
+	fmt.Println("")
 
-	var foundSeriesMsg string
+	// var foundSeriesMsg string
 
 	metrics := []string{p.filter.Match}
-	if !p.disablePerMetricRequests {
-		log.Printf("Exploring metrics...")
-		metrics, err = p.src.Explore(ctx, p.filter, tenantID)
-		if err != nil {
-			return fmt.Errorf("cannot get metrics from source %s: %w", p.src.Addr, err)
-		}
-
-		if len(metrics) == 0 {
-			errMsg := "no metrics found"
-			if tenantID != "" {
-				errMsg = fmt.Sprintf("%s for tenant id: %s", errMsg, tenantID)
-			}
-			log.Println(errMsg)
-			return nil
-		}
-		foundSeriesMsg = fmt.Sprintf("Found %d metrics to import", len(metrics))
-	}
-
-	if !p.interCluster {
-		// do not prompt for intercluster because there could be many tenants,
-		// and we don't want to interrupt the process when moving to the next tenant.
-		question := foundSeriesMsg + ". Continue?"
-		if !silent && !prompt(question) {
-			return nil
-		}
-	} else {
-		log.Print(foundSeriesMsg)
-	}
-
-	processingMsg := fmt.Sprintf("Requests to make: %d", len(metrics)*len(ranges))
-	if len(ranges) > 1 {
-		processingMsg = fmt.Sprintf("Selected time range will be split into %d ranges according to %q step. %s", len(ranges), p.filter.Chunk, processingMsg)
-	}
-	log.Print(processingMsg)
 
 	var bar *pb.ProgressBar
 	if !silent {
-		bar = barpool.NewSingleProgress(fmt.Sprintf(nativeWithBackoffTpl, barPrefix), len(metrics)*len(ranges))
+		// initialize empty bar it will be used in the iteration above the ranges and metrics
+		bar = barpool.NewSingleProgress("", 0)
 		if p.disablePerMetricRequests {
-			bar = barpool.NewSingleProgress(nativeSingleProcessTpl, 0)
+			bar = barpool.NewSingleProgress("", 0)
 		}
-		bar.Start()
-		defer bar.Finish()
 	}
 
 	filterCh := make(chan native.Filter)
@@ -263,15 +229,59 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 	}
 
 	// any error breaks the import
-	for _, s := range metrics {
+	for _, times := range ranges {
+		p.filter.TimeStart = times[0].Format(time.RFC3339)
+		p.filter.TimeEnd = times[1].Format(time.RFC3339)
 
-		match, err := buildMatchWithFilter(p.filter.Match, s)
-		if err != nil {
-			logger.Errorf("failed to build export filters: %s", err)
-			continue
+		bar.SetCurrent(0)
+		if !p.disablePerMetricRequests {
+			log.Printf("Exploring metrics for filter: %s", p.filter.String())
+			metrics, err = p.src.Explore(ctx, p.filter, tenantID)
+			if err != nil {
+				log.Printf("cannot get metrics from source %s: %s with filter: %s", p.src.Addr, err, p.filter.String())
+				continue
+			}
+
+			if len(metrics) == 0 {
+				errMsg := "no metrics found"
+				if tenantID != "" {
+					errMsg = fmt.Sprintf("%s for tenant id: %s", errMsg, tenantID)
+				}
+				log.Println(errMsg)
+				fmt.Println("")
+				continue
+			}
+			log.Printf("Found %d metrics to import", len(metrics))
 		}
 
-		for _, times := range ranges {
+		// if !p.interCluster {
+		// 	// do not prompt for intercluster because there could be many tenants,
+		// 	// and we don't want to interrupt the process when moving to the next tenant.
+		// 	question := foundSeriesMsg + ". Continue?"
+		// 	if !silent && !prompt(question) {
+		// 		return nil
+		// 	}
+		// } else {
+		// 	log.Print(foundSeriesMsg)
+		// }
+
+		processingMsg := fmt.Sprintf("Requests to make: %d", len(metrics))
+		if len(ranges) > 1 {
+			processingMsg = fmt.Sprintf("Selected time range will be split into %d ranges according to %q step. %s", len(ranges), p.filter.Chunk, processingMsg)
+		}
+		log.Print(processingMsg)
+		tpl := fmt.Sprintf(nativeWithBackoffTpl, barPrefix)
+		bar.SetTemplate(pb.ProgressBarTemplate(tpl))
+		bar.SetTotal(int64(len(metrics)))
+		bar.Start()
+
+		for _, metric := range metrics {
+			match, err := buildMatchWithFilter(p.filter.Match, metric)
+			if err != nil {
+				logger.Errorf("failed to build export filters: %s", err)
+				continue
+			}
+
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("context canceled")
@@ -294,6 +304,7 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 		return fmt.Errorf("import process failed: %s", err)
 	}
 
+	bar.Finish()
 	return nil
 }
 
