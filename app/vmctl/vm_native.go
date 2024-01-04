@@ -188,7 +188,9 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 	log.Printf(initMessage, initParams...)
 	fmt.Println("")
 
-	// var foundSeriesMsg string
+	if len(ranges) > 1 {
+		log.Print(fmt.Sprintf("Selected time range will be split into %d ranges according to %q step.", len(ranges), p.filter.Chunk))
+	}
 
 	metrics := []string{p.filter.Match}
 
@@ -233,8 +235,10 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 		p.filter.TimeStart = times[0].Format(time.RFC3339)
 		p.filter.TimeEnd = times[1].Format(time.RFC3339)
 
-		bar.SetCurrent(0)
+		tpl := nativeSingleProcessTpl
+
 		if !p.disablePerMetricRequests {
+			tpl = fmt.Sprintf(nativeWithBackoffTpl, barPrefix)
 			log.Printf("Exploring metrics for filter: %s", p.filter.String())
 			metrics, err = p.src.Explore(ctx, p.filter, tenantID)
 			if err != nil {
@@ -254,6 +258,13 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 			log.Printf("Found %d metrics to import", len(metrics))
 		}
 
+		if bar != nil {
+			bar.SetCurrent(0)
+			bar.SetTemplate(pb.ProgressBarTemplate(tpl))
+			bar.SetTotal(int64(len(metrics)))
+			bar.Start()
+		}
+
 		// if !p.interCluster {
 		// 	// do not prompt for intercluster because there could be many tenants,
 		// 	// and we don't want to interrupt the process when moving to the next tenant.
@@ -264,16 +275,6 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 		// } else {
 		// 	log.Print(foundSeriesMsg)
 		// }
-
-		processingMsg := fmt.Sprintf("Requests to make: %d", len(metrics))
-		if len(ranges) > 1 {
-			processingMsg = fmt.Sprintf("Selected time range will be split into %d ranges according to %q step. %s", len(ranges), p.filter.Chunk, processingMsg)
-		}
-		log.Print(processingMsg)
-		tpl := fmt.Sprintf(nativeWithBackoffTpl, barPrefix)
-		bar.SetTemplate(pb.ProgressBarTemplate(tpl))
-		bar.SetTotal(int64(len(metrics)))
-		bar.Start()
 
 		for _, metric := range metrics {
 			match, err := buildMatchWithFilter(p.filter.Match, metric)
@@ -294,6 +295,9 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 			}:
 			}
 		}
+		if bar != nil {
+			bar.Finish()
+		}
 	}
 
 	close(filterCh)
@@ -304,7 +308,6 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 		return fmt.Errorf("import process failed: %s", err)
 	}
 
-	bar.Finish()
 	return nil
 }
 
