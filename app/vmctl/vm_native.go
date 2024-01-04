@@ -189,7 +189,7 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 	fmt.Println("")
 
 	if len(ranges) > 1 {
-		log.Print(fmt.Sprintf("Selected time range will be split into %d ranges according to %q step.", len(ranges), p.filter.Chunk))
+		log.Printf("Selected time range will be split into %d ranges according to %q step.", len(ranges), p.filter.Chunk)
 	}
 
 	metrics := []string{p.filter.Match}
@@ -198,9 +198,6 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 	if !silent {
 		// initialize empty bar it will be used in the iteration above the ranges and metrics
 		bar = barpool.NewSingleProgress("", 0)
-		if p.disablePerMetricRequests {
-			bar = barpool.NewSingleProgress("", 0)
-		}
 	}
 
 	filterCh := make(chan native.Filter)
