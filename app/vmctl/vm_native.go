@@ -193,11 +193,25 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 	}
 
 	metrics := []string{p.filter.Match}
+	// TODO do we really need a prompt?
+	// if !p.interCluster {
+	// 	// do not prompt for intercluster because there could be many tenants,
+	// 	// and we don't want to interrupt the process when moving to the next tenant.
+	// 	question := foundSeriesMsg + ". Continue?"
+	// 	if !silent && !prompt(question) {
+	// 		return nil
+	// 	}
+	// } else {
+	// 	log.Print(foundSeriesMsg)
+	// }
 
+	bars := make(map[string]*pb.ProgressBar)
 	var bar *pb.ProgressBar
 	if !silent {
-		// initialize empty bar it will be used in the iteration above the ranges and metrics
-		bar = barpool.NewSingleProgress("", 0)
+		bar = barpool.AddWithTemplate("", 0)
+		if p.disablePerMetricRequests {
+			bar = barpool.AddWithTemplate(nativeSingleProcessTpl, 0)
+		}
 	}
 
 	filterCh := make(chan native.Filter)
@@ -214,8 +228,9 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 						errCh <- err
 						return
 					}
-					if bar != nil {
-						bar.Increment()
+					id := fmt.Sprintf("%s:%s", f.TimeStart, f.TimeEnd)
+					if bars[id] != nil {
+						bars[id].Increment()
 					}
 				} else {
 					if err := p.runSingle(ctx, f, srcURL, dstURL, bar); err != nil {
@@ -228,75 +243,71 @@ func (p *vmNativeProcessor) runBackfilling(ctx context.Context, tenantID string,
 	}
 
 	// any error breaks the import
+	var rwg sync.WaitGroup
 	for _, times := range ranges {
-		p.filter.TimeStart = times[0].Format(time.RFC3339)
-		p.filter.TimeEnd = times[1].Format(time.RFC3339)
+		rwg.Add(1)
+		go func(times []time.Time, filter native.Filter) {
+			defer rwg.Done()
+			filter.TimeStart = times[0].Format(time.RFC3339)
+			filter.TimeEnd = times[1].Format(time.RFC3339)
 
-		tpl := nativeSingleProcessTpl
+			tpl := nativeSingleProcessTpl
 
-		if !p.disablePerMetricRequests {
-			tpl = fmt.Sprintf(nativeWithBackoffTpl, barPrefix)
-			log.Printf("Exploring metrics for filter: %s", p.filter.String())
-			metrics, err = p.src.Explore(ctx, p.filter, tenantID)
-			if err != nil {
-				log.Printf("cannot get metrics from source %s: %s with filter: %s", p.src.Addr, err, p.filter.String())
-				continue
-			}
-
-			if len(metrics) == 0 {
-				errMsg := "no metrics found"
-				if tenantID != "" {
-					errMsg = fmt.Sprintf("%s for tenant id: %s", errMsg, tenantID)
+			if !p.disablePerMetricRequests {
+				tpl = fmt.Sprintf(nativeWithBackoffTpl, barPrefix)
+				log.Printf("Exploring metrics for filter: %s", p.filter.String())
+				metrics, err = p.src.Explore(ctx, filter, tenantID)
+				if err != nil {
+					log.Printf("cannot get metrics from source %s: %s with filter: %s", p.src.Addr, err, filter.String())
+					return
 				}
-				log.Println(errMsg)
-				fmt.Println("")
-				continue
-			}
-			log.Printf("Found %d metrics to import", len(metrics))
-		}
 
-		if bar != nil {
-			bar.SetCurrent(0)
-			bar.SetTemplate(pb.ProgressBarTemplate(tpl))
-			bar.SetTotal(int64(len(metrics)))
-			bar.Start()
-		}
-
-		// if !p.interCluster {
-		// 	// do not prompt for intercluster because there could be many tenants,
-		// 	// and we don't want to interrupt the process when moving to the next tenant.
-		// 	question := foundSeriesMsg + ". Continue?"
-		// 	if !silent && !prompt(question) {
-		// 		return nil
-		// 	}
-		// } else {
-		// 	log.Print(foundSeriesMsg)
-		// }
-
-		for _, metric := range metrics {
-			match, err := buildMatchWithFilter(p.filter.Match, metric)
-			if err != nil {
-				logger.Errorf("failed to build export filters: %s", err)
-				continue
+				if len(metrics) == 0 {
+					errMsg := "no metrics found"
+					if tenantID != "" {
+						errMsg = fmt.Sprintf("%s for tenant id: %s", errMsg, tenantID)
+					}
+					log.Println(errMsg)
+					fmt.Println("")
+					return
+				}
+				log.Printf("Found %d metrics to import", len(metrics))
 			}
 
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context canceled")
-			case infErr := <-errCh:
-				return fmt.Errorf("native error: %s", infErr)
-			case filterCh <- native.Filter{
-				Match:     match,
-				TimeStart: times[0].Format(time.RFC3339),
-				TimeEnd:   times[1].Format(time.RFC3339),
-			}:
+			if !silent {
+				bar = barpool.AddWithTemplate(tpl, len(metrics))
+				id := fmt.Sprintf("%s:%s", filter.TimeStart, filter.TimeEnd)
+				bars[id] = bar
 			}
-		}
-		if bar != nil {
-			bar.Finish()
-		}
+
+			for _, metric := range metrics {
+				match, err := buildMatchWithFilter(p.filter.Match, metric)
+				if err != nil {
+					logger.Errorf("failed to build export filters: %s", err)
+					continue
+				}
+
+				select {
+				case <-ctx.Done():
+					return // fmt.Errorf("context canceled")
+				case <-errCh:
+					return // fmt.Errorf("native error: %s", infErr)
+				case filterCh <- native.Filter{
+					Match:     match,
+					TimeStart: times[0].Format(time.RFC3339),
+					TimeEnd:   times[1].Format(time.RFC3339),
+				}:
+				}
+			}
+		}(times, p.filter)
 	}
 
+	if err := barpool.Start(); err != nil {
+		log.Fatalf("error start barpool: %s", err)
+	}
+
+	rwg.Wait()
+	barpool.Stop()
 	close(filterCh)
 	wg.Wait()
 	close(errCh)
