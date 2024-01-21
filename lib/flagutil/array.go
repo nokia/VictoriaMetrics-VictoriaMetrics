@@ -6,7 +6,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fileexpander"
 )
+
+func NewDynamicArrayString(name string, description string) *ArrayString {
+	fileexpander.AppendToDynamicFlagList(name)
+	return NewArrayString(name, description)
+}
 
 // NewArrayString returns new ArrayString with the given name and description.
 func NewArrayString(name, description string) *ArrayString {

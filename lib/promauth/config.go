@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fileexpander"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/fasthttp"
@@ -666,11 +667,15 @@ func (actx *authContext) initFromBasicAuthConfig(baseDir string, ba *BasicAuthCo
 		return fmt.Errorf("missing `username` in `basic_auth` section")
 	}
 	if ba.PasswordFile == "" {
-		// See https://en.wikipedia.org/wiki/Basic_access_authentication
-		token := ba.Username + ":" + ba.Password.String()
-		token64 := base64.StdEncoding.EncodeToString([]byte(token))
-		ah := "Basic " + token64
 		actx.getAuthHeader = func() (string, error) {
+			password, err := fileexpander.Expand(ba.Password.String())
+			if err != nil {
+				return "", err
+			}
+			// See https://en.wikipedia.org/wiki/Basic_access_authentication
+			token := ba.Username + ":" + password
+			token64 := base64.StdEncoding.EncodeToString([]byte(token))
+			ah := "Basic " + token64
 			return ah, nil
 		}
 		actx.authHeaderDigest = fmt.Sprintf("basic(username=%q, password=%q)", ba.Username, ba.Password)
