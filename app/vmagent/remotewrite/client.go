@@ -270,7 +270,6 @@ func getAuthConfig(argIdx int) (*promauth.Config, error) {
 		Headers:         hdrs,
 	}
 	authCfg, err := opts.NewConfig()
-	logger.Warnf("\n\n\nConfig: %s  %s \n\n", opts.BasicAuth.Username, opts.BasicAuth.Password)
 	if err != nil {
 		return nil, fmt.Errorf("cannot populate auth config for remoteWrite idx: %d, err: %w", argIdx, err)
 	}

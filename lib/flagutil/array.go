@@ -6,14 +6,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fileexpander"
 )
+
+// list of reloadable flags.
+var ReloadableFlagsList []string = []string{}
 
 // NewReloadableArrayString returns new ArrayString with the given name and description.
 // The flag is added into the a list of reloadable flags, so that the file expansion takes place on ad-hoc basic instead at startup
 func NewReloadableArrayString(name string, description string) *ArrayString {
-	fileexpander.AppendToReloadableFlagList(name)
+	ReloadableFlagsList = append(ReloadableFlagsList, name)
 	return NewArrayString(name, description)
 }
 
