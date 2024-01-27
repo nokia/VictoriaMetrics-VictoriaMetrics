@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envtemplate"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fileexpander"
 )
 
 var (
@@ -27,6 +28,8 @@ func Parse() {
 
 // ParseFlagSet parses the given args into the given fs.
 func ParseFlagSet(fs *flag.FlagSet, args []string) {
+	// Process args with file expander
+	args = fileexpander.Parse(args)
 	args = expandArgs(args)
 	if err := fs.Parse(args); err != nil {
 		// Do not use lib/logger here, since it is uninitialized yet.

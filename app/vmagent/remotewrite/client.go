@@ -47,8 +47,9 @@ var (
 		"For example, -remoteWrite.headers='My-Auth:foobar' would send 'My-Auth: foobar' HTTP header with every request to the corresponding -remoteWrite.url. "+
 		"Multiple headers must be delimited by '^^': -remoteWrite.headers='header1:value1^^header2:value2'")
 
-	basicAuthUsername     = flagutil.NewArrayString("remoteWrite.basicAuth.username", "Optional basic auth username to use for the corresponding -remoteWrite.url")
-	basicAuthPassword     = flagutil.NewDynamicArrayString("remoteWrite.basicAuth.password", "Optional basic auth password to use for the corresponding -remoteWrite.url")
+	basicAuthUsername = flagutil.NewArrayString("remoteWrite.basicAuth.username", "Optional basic auth username to use for the corresponding -remoteWrite.url")
+	basicAuthPassword = flagutil.NewReloadableArrayString("remoteWrite.basicAuth.password", "Optional basic auth password to use for the corresponding -remoteWrite.url"+
+		"File containing the credential can be passed via file expander format `$__file{<path>}`.The file is re-read every second")
 	basicAuthPasswordFile = flagutil.NewArrayString("remoteWrite.basicAuth.passwordFile", "Optional path to basic auth password to use for the corresponding -remoteWrite.url. "+
 		"The file is re-read every second"+
 		"This flag is deprecated and will be removed from future release. Use the `remoteWrite.basicAuth.passwordFile` and specify the file path using the file provider expression. '$__file{<path-to-file>}'")
@@ -269,6 +270,7 @@ func getAuthConfig(argIdx int) (*promauth.Config, error) {
 		Headers:         hdrs,
 	}
 	authCfg, err := opts.NewConfig()
+	logger.Warnf("\n\n\nConfig: %s  %s \n\n", opts.BasicAuth.Username, opts.BasicAuth.Password)
 	if err != nil {
 		return nil, fmt.Errorf("cannot populate auth config for remoteWrite idx: %d, err: %w", argIdx, err)
 	}

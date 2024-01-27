@@ -2,50 +2,38 @@ package fileexpander
 
 import (
 	"flag"
-	"fmt"
 	"log"
-	"os"
 	"slices"
 	"strings"
 )
 
-var dynamicFlagsList []string = []string{}
+var enableFileExpander = flag.Bool("enableFileExpander", false, "enables all the cli flags set of file expander format `$__file{<path>}` to be expanded with the contents of the respective flag.")
 
-func AppendToDynamicFlagList(name string) {
-	dynamicFlagsList = append(dynamicFlagsList, name)
+var reloadableFlagsList []string = []string{}
+
+// AppendToReloadableFlagList appends the name of the flag to reloadableFlagsList
+func AppendToReloadableFlagList(name string) {
+	reloadableFlagsList = append(reloadableFlagsList, name)
 }
 
-func Parse() {
-	ParseFlagSet(flag.CommandLine, os.Args[1:])
-}
-
-// ParseFlagSet parses the given args into the given fs.
-func ParseFlagSet(fs *flag.FlagSet, args []string) {
-	fmt.Printf("Args Before: %v\n\n", args)
-	args = expandArgs(args)
-	fmt.Println(args)
-	if err := fs.Parse(args); err != nil {
-		// Do not use lib/logger here, since it is uninitialized yet.
-		log.Fatalf("cannot parse flags %q: %s", args, err)
-	}
-	if fs.NArg() > 0 {
-		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/4845
-		log.Fatalf("unprocessed command-line args left: %s; the most likely reason is missing `=` between boolean flag name and value; "+
-			"see https://pkg.go.dev/flag#hdr-Command_line_flag_syntax", fs.Args())
-	}
+func Parse(args []string) []string {
+	return expandArgs(args)
 }
 
 func expandArgs(args []string) []string {
-	for i, arg := range args {
+	expandedArgs := make([]string, len(args))
+	for _, arg := range args {
 		splittedArg := strings.Split(arg, "=")
-		if slices.Contains(dynamicFlagsList, splittedArg[0]) {
+		// do not expand right away in case the flag is reloadable
+		if slices.Contains(reloadableFlagsList, splittedArg[0]) {
+			expandedArgs = append(expandedArgs, arg)
 			continue
 		}
-		expandedArg, err := Expand(arg)
+		expArg, err := Expand(arg)
 		if err != nil {
 			log.Fatalf("Ran into the error: %s", err.Error())
 		}
-		args[i] = string(expandedArg)
+		expandedArgs = append(expandedArgs, string(expArg))
 	}
-	return args
+	return expandedArgs
 }
