@@ -20,7 +20,7 @@ import (
 
 var (
 	loggerLevel    = flag.String("loggerLevel", "INFO", "Minimum level of errors to log. Possible values: INFO, WARN, ERROR, FATAL, PANIC")
-	loggerFormat   = flag.String("loggerFormat", "default", "Format for logs. Possible values: default, json")
+	loggerFormat   = flag.String("loggerFormat", "default", "Format for logs. Possible values: default, json, clog")
 	loggerOutput   = flag.String("loggerOutput", "stderr", "Output for the logs. Supported values: stderr, stdout, syslog")
 	loggerTimezone = flag.String("loggerTimezone", "UTC", "Timezone to use for timestamps in logs. Timezone must be a valid IANA Time Zone. "+
 		"For example: America/New_York, Europe/Berlin, Etc/GMT+3 or Local")
@@ -31,6 +31,8 @@ var (
 	errorsPerSecondLimit = flag.Int("loggerErrorsPerSecondLimit", 0, `Per-second limit on the number of ERROR messages. If more than the given number of errors are emitted per second, the remaining errors are suppressed. Zero values disable the rate limit`)
 	warnsPerSecondLimit  = flag.Int("loggerWarnsPerSecondLimit", 0, `Per-second limit on the number of WARN messages. If more than the given number of warns are emitted per second, then the remaining warns are suppressed. Zero values disable the rate limit`)
 )
+
+var defClogFieldMsg string
 
 // Init initializes the logger.
 //
@@ -47,7 +49,11 @@ func Init() {
 	validateLoggerFormat()
 	initTimezone()
 	go logLimiterCleaner()
+	if *loggerFormat == "clog" {
+		defClogFieldMsg = getClogMessage()
+	}
 	logAllFlags()
+
 }
 
 func initTimezone() {
@@ -86,10 +92,10 @@ func validateLoggerLevel() {
 
 func validateLoggerFormat() {
 	switch *loggerFormat {
-	case "default", "json":
+	case "default", "json", "clog":
 	default:
 		// We cannot use logger.Panicf here, since the logger isn't initialized yet.
-		panic(fmt.Errorf("FATAL: unsupported `-loggerFormat` value: %q; supported values are: default, json", *loggerFormat))
+		panic(fmt.Errorf("FATAL: unsupported `-loggerFormat` value: %q; supported values are: default, json, clog", *loggerFormat))
 	}
 }
 
@@ -264,6 +270,15 @@ func logMessage(level, msg string, skipframes int) {
 	}
 	var logMsg string
 	switch *loggerFormat {
+	case "clog":
+		logMsg = fmt.Sprintf(
+			`{%s,%q:%q,%q:%q,%q:%q,%q:%q}`+"\n",
+			defClogFieldMsg,
+			fieldClogTime, timestamp,
+			fieldLevel, levelLowercase,
+			fieldCaller, location,
+			fieldClogMsg, msg,
+		)
 	case "json":
 		if *disableTimestamps {
 			logMsg = fmt.Sprintf(
@@ -300,7 +315,7 @@ func logMessage(level, msg string, skipframes int) {
 
 	switch level {
 	case "PANIC":
-		if *loggerFormat == "json" {
+		if *loggerFormat == "json" || *loggerFormat == "clog" {
 			// Do not clutter `json` output with panic stack trace
 			os.Exit(-1)
 		}

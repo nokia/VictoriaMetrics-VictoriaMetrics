@@ -2,37 +2,44 @@ package syslog
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
 )
 
 type SyslogConfig struct {
-	QueueSize int          `yaml:"queue_size,omit_empty"`
-	Host      string       `yaml:"host"`
-	Port      int          `yaml:"port,omit_empty"`
-	Protocol  string       `yaml:"protocol,omit_empty"`
-	Facility  int          `yaml:"facility,omit_empty"`
-	Formatter RfcFormatter `yaml:"formatter,omit_empty"`
-	Rfc       int          `yaml:"rfc,omit_empty"`
-	TLS       TLS          `yaml:"tls,omit_empty"`
-	BasicAuth BasicAuth    `yaml:"basic_auth,omit_empty"`
+	Syslog      Syslog      `json:"syslog"`
+	QueueConfig QueueConfig `json:"queue_config"`
 }
 
-type RfcFormatter struct {
-	RfcNum int `yaml:"rfcNum,omit_empty"`
+type QueueConfig struct {
+	Capacity int64 `json:"capacity,omitempty"`
+	Retries  int64 `json:"retries,omitempty"`
+}
+
+type Syslog struct {
+	Host        string    `json:"host"`
+	Port        int64     `json:"port,omitempty"`
+	Protocol    string    `json:"protocol,omitempty"`
+	RFCNum      int64     `json:"rfcNum,omitempty"`
+	Facility    int64     `json:"facility,omitempty"`
+	DefSeverity string    `json:"defSeverity,omitempty"`
+	BasicAuth   BasicAuth `json:"basic_auth,omitempty"`
+	TLS         TLS       `json:"tls,omitempty"`
+}
+
+type BasicAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type TLS struct {
-	CaCrt              interface{} `yaml:"ca.crt,omit_empty"`
-	CertCrt            interface{} `yaml:"cert.crt,omit_empty"`
-	CertKey            interface{} `yaml:"cert.key,omit_empty"`
-	ServerName         interface{} `yaml:"server_name,omit_empty"`
-	InsecureSkipVerify bool        `yaml:"insecure_skip_verify,omit_empty"`
-}
-type BasicAuth struct {
-	Username interface{} `yaml:"username"`
-	Password interface{} `yaml:"password"`
+	Ca                 string `json:"ca_file,omitempty"`
+	CertFile           string `json:"cert_file,omitempty"`
+	Keyfile            string `json:"key_file,omitempty"`
+	ServerName         string `json:"server_name,omitempty"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
 }
 
 const (
@@ -47,6 +54,7 @@ const (
 var (
 	sysCfg       SyslogConfig
 	syslogConfig = flag.String("syslogConfig", "", "Configuration file for syslog")
+	logChan      chan string
 )
 
 func Init() {
@@ -60,43 +68,43 @@ func Init() {
 		if err != nil {
 			panic(err)
 		}
-		if sysCfg.QueueSize == 0 {
-			sysCfg.QueueSize = DEF_QUEUE_SIZE_VALUE
+		if sysCfg.QueueConfig.Capacity == 0 {
+			sysCfg.QueueConfig.Capacity = DEF_QUEUE_SIZE_VALUE
 		}
 
-		if sysCfg.Port == 0 {
-			sysCfg.Port = DEF_SYSLOG_SERVER_PORT
+		if sysCfg.Syslog.Port == 0 {
+			sysCfg.Syslog.Port = DEF_SYSLOG_SERVER_PORT
 		}
 
-		if sysCfg.Protocol == "" {
-			sysCfg.Protocol = DEF_SYSLOG_PROTOCOL
+		if sysCfg.Syslog.Protocol == "" {
+			sysCfg.Syslog.Protocol = DEF_SYSLOG_PROTOCOL
 		}
-
+	} else {
+		panic(fmt.Errorf("Syslog is configured but configuration file missing"))
 	}
+
+	logChan = make(chan string, sysCfg.QueueConfig.Capacity)
 
 }
 
 type SyslogWriter struct {
-	In *chan string
 }
 
 func GetSyslogWriter() *SyslogWriter {
-	inChan := make(chan string, sysCfg.QueueSize)
 
-	return &SyslogWriter{
-		In: &inChan,
-	}
+	return &SyslogWriter{}
 }
 
 func (w *SyslogWriter) Write(b []byte) (int, error) {
 	lMsg := string(b)
 
 	select {
-	case *w.In <- lMsg:
+	case logChan <- lMsg:
 		//message sent
 	default:
-		<-*w.In
-		*w.In <- lMsg
+		drpMsg := <-logChan
+		fmt.Println("Dropped Message:", drpMsg)
+		logChan <- lMsg
 	}
 
 	return 0, nil
