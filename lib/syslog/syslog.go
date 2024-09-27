@@ -1,19 +1,19 @@
 package syslog
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"os"
 
-	"gopkg.in/yaml.v2"
-	
 	"github.com/VictoriaMetrics/metrics"
+	"gopkg.in/yaml.v2"
 )
-
 
 type config struct {
 	SyslogConfig syslogConfig `yaml:"syslog"`
-	QueueConfig queueConfig   `yaml:"queue_config"`
+	QueueConfig  queueConfig  `yaml:"queue_config"`
 }
 
 type queueConfig struct {
@@ -22,14 +22,14 @@ type queueConfig struct {
 }
 
 type syslogConfig struct {
-	RemoteHost  string    `yaml:"host"`
-	Port        int64     `yaml:"port,omitempty"`
-	Hostname    string    `yaml:"hostname,omitempty"`
-	Protocol    string    `yaml:"protocol,omitempty"`
-	RfcNum      int64     `yaml:"rfcNum,omitempty"`
-	Facility    int64     `yaml:"facility,omitempty"`
-	BasicAuth   basicAuth `yaml:"basic_auth,omitempty"`
-	Tls         tlsConfig `yaml:"tls,omitempty"`
+	RemoteHost string    `yaml:"host"`
+	Port       int64     `yaml:"port,omitempty"`
+	Hostname   string    `yaml:"hostname,omitempty"`
+	Protocol   string    `yaml:"protocol,omitempty"`
+	RfcNum     int64     `yaml:"rfcNum,omitempty"`
+	Facility   int64     `yaml:"facility,omitempty"`
+	BasicAuth  basicAuth `yaml:"basic_auth,omitempty"`
+	Tls        tlsConfig `yaml:"tls,omitempty"`
 }
 
 type basicAuth struct {
@@ -40,15 +40,14 @@ type basicAuth struct {
 type tlsConfig struct {
 	Ca                 string `yaml:"ca_file,omitempty"`
 	CertFile           string `yaml:"cert_file,omitempty"`
-	Keyfile            string `yaml:"key_file,omitempty"`
+	KeyFile            string `yaml:"key_file,omitempty"`
 	ServerName         string `yaml:"server_name,omitempty"`
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify,omitempty"`
 }
 
-
 // Log data to be written into the buffered channel and sent to the syslog server
 type SyslogLogContent struct {
-	Msg string
+	Msg      string
 	LogLevel string
 }
 
@@ -63,9 +62,8 @@ const (
 
 var (
 	cfgFile = flag.String("syslogConfig", "", "Configuration file for syslog")
-	logChan      chan SyslogLogContent
+	logChan chan SyslogLogContent
 )
-
 
 // Init initializes the buffered channel and the syslog writer
 func Init() {
@@ -99,17 +97,29 @@ func Init() {
 		panic(fmt.Errorf("Syslog is configured but configuration file missing"))
 	}
 
-	// Initializes the buffered channel and the syslog writer 
+	// Initializes the buffered channel and the syslog writer
 	logChan = make(chan SyslogLogContent, sysCfg.QueueConfig.Capacity)
-	syslogW := &syslogWriter{framer: defaultFramer, formatter: defaultFormatter}
+
+	var syslogW *syslogWriter
+	if sysCfg.SyslogConfig.Protocol == "tcp+tls" {
+		var syslogtlsConfig *tls.Config
+		syslogtlsConfig, err := readTlsConfig(sysCfg.SyslogConfig.Tls.CertFile, sysCfg.SyslogConfig.Tls.KeyFile, sysCfg.SyslogConfig.Tls.Ca, sysCfg.SyslogConfig.Tls.ServerName, sysCfg.SyslogConfig.Tls.InsecureSkipVerify)
+		if err != nil {
+			fmt.Errorf("Failed reading the tls certificates %w", err)
+		}
+		syslogW = &syslogWriter{framer: defaultFramer, formatter: defaultFormatter, tlsConfig: syslogtlsConfig}
+	} else {
+		syslogW = &syslogWriter{framer: defaultFramer, formatter: defaultFormatter}
+	}
+
 	syslogW.sysCfg = sysCfg
-	
+
 	// watches the channel for log data written by the logger and forwards it to the syslog server
-	go syslogW.logSender();
+	go syslogW.logSender()
 }
 
 // WriteInfo writes the log data to buffered channel. If the channel is full the oldest log data is dropped
-func WriteInfo(s SyslogLogContent) (error) {
+func WriteInfo(s SyslogLogContent) error {
 	channelSize := "vm_syslog_queue_size"
 	metrics.GetOrCreateGauge(channelSize, func() float64 {
 		return float64(len(logChan))
@@ -127,4 +137,36 @@ func WriteInfo(s SyslogLogContent) (error) {
 	}
 
 	return nil
+}
+
+func readTlsConfig(certFile, keyFile, CAFile, serverName string, insecureSkipVerify bool) (*tls.Config, error) {
+	var certs []tls.Certificate
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot load TLS certificate from `cert_file`=%q, `key_file`=%q: %w", certFile, keyFile, err)
+		}
+
+		certs = []tls.Certificate{cert}
+	}
+
+	var rootCAs *x509.CertPool
+	if CAFile != "" {
+		pem, err := os.ReadFile(CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read `ca_file` %q: %w", CAFile, err)
+		}
+
+		rootCAs = x509.NewCertPool()
+		if !rootCAs.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("cannot parse data from `ca_file` %q", CAFile)
+		}
+	}
+
+	return &tls.Config{
+		Certificates:       certs,
+		InsecureSkipVerify: insecureSkipVerify,
+		RootCAs:            rootCAs,
+		ServerName:         serverName,
+	}, nil
 }
