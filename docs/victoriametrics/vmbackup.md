@@ -17,7 +17,7 @@ aliases:
 `vmbackup` creates backups of VictoriaMetrics data to protect against hardware failures and accidental data loss.
 Whether you are using a single-node  or a cluster version, it is recommended to use `vmbackup` to perform periodical data backup from instant snapshots.
 More information on how to work with them could be found in [instant snapshots documentation](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-work-with-snapshots).
-Backup process can be interrupted at any time. It is automatically resumed from the interruption point when restarting `vmbackup` with the same args.
+Backup process can be interrupted at any time. A full-snapshot backup (no `-start`/`-end`) is automatically resumed from the interruption point when restarting `vmbackup` with the same args. Time-windowed backups mutate the snapshot copy; see [Troubleshooting](#troubleshooting).
 Backed up data can be restored with [vmrestore](https://docs.victoriametrics.com/victoriametrics/vmrestore/).
 
 See [this article](https://medium.com/@valyala/speeding-up-backups-for-big-time-series-databases-533c1a927883) for more details.
@@ -191,12 +191,31 @@ These properties allow performing fast and cheap incremental backups and server-
 See [this article](https://medium.com/@valyala/speeding-up-backups-for-big-time-series-databases-533c1a927883) for more details.
 `vmbackup` can work improperly or slowly when these properties are violated.
 
+## Time-windowed backups (`-start` / `-end` / `-forceMerge`)
+
+Optional flags select a subset of snapshot **parts** before upload. Unset flags keep the current full-snapshot behavior.
+
+```sh
+./vmbackup -storageDataPath=</path/to/data> -snapshot.createURL=http://localhost:8428/snapshot/create \
+  -start=now-1d -end=now -forceMerge \
+  -dst=fs://</path/to/backup>
+```
+
+* `-start` / `-end` accept the same timestamp syntax as the export/query API (RFC3339, Unix seconds/ms, relative `now-…`). If `-start` is set and `-end` is empty, `-end` defaults to `now`. If `-end` is set and `-start` is empty, the window is from the beginning of the snapshot up to `-end` (first windowed / catch-up backup).
+* Selection first drops parts that do not overlap `[start, end)`, then rewrites remaining parts so dest **samples** are in `[start, end)`. Daily dests should use `-end` as the next day's midnight.
+* Selection and rewrite run on the **snapshot copy** only. Live `-storageDataPath` is not modified except for snapshot create/delete.
+* `-forceMerge` compact remaining parts in-process when no time window is set (same contract as `/internal/force_merge`). When `-start` or `-end` is set, rewrite always runs so samples outside the window are trimmed. The snapshot directory needs free space up to the sum of merged part sizes.
+* `-start` greater than or equal to `-end`, a window with no overlapping parts, or a window that trims to zero samples, fails closed instead of uploading an empty dest.
+* Windowing rewrites the **snapshot copy** in place. Operators who need the original snapshot must copy or recreate it (`-snapshot.createURL`) before a windowed run.
+* `indexdb` and metadata are kept wholesale so `vmrestore` can serve the kept parts.
+
 ## Troubleshooting
 
 * If the backup is slow, try setting higher value for `-concurrency` flag. This will increase the number of concurrent workers that upload data to backup storage.
 * If `vmbackup` consumes all the network bandwidth or CPU, then either decrease the `-concurrency` command-line flag value or set `-maxBytesPerSecond` command-line flag value to lower value.
 * If `vmbackup` consumes all the CPU on systems with big number of CPU cores, then try running it with `-filestream.disableFadvise` command-line flag.
-* If `vmbackup` has been interrupted due to temporary error, then just restart it with the same args. It will resume the backup process. After backup process has finished successfully, please [remove old snapshot](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#delete-snapshot) that was created during failed attempt.
+* If a **full-snapshot** backup has been interrupted due to a temporary error, restart `vmbackup` with the same args. It will resume the upload. After backup process has finished successfully, please [remove old snapshot](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#delete-snapshot) that was created during failed attempt.
+* If a **time-windowed** backup (`-start` / `-end` / `-forceMerge`) is interrupted **during** snapshot rewrite, do not resume with the same `-snapshotName`. Create a new snapshot (`-snapshot.createURL`) or restore the original snapshot first — the snapshot directory is mutated in place. If rewrite finished and only the upload failed, restarting with the same args is safe.
 * Backups created from [single-node VictoriaMetrics](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/) cannot be restored
   at [cluster VictoriaMetrics](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/) and vice versa.
 * Please find description how snapshots use disk space and recommendations in [snapshot troubleshooting](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#snapshot-troubleshooting)
@@ -356,6 +375,8 @@ Run `vmbackup -help` in order to see all the available options:
      Note: If custom S3 endpoint is used, URL should contain only name of the bucket, while hostname of S3 server must be specified via the -customS3Endpoint command-line flag.
   -enableTCP6
      Whether to enable IPv6 for listening and dialing. By default, only IPv4 TCP and UDP are used
+  -end string
+     Optional exclusive upper bound of the backup window. Same syntax as -start. When -start is empty, samples from the beginning of the snapshot up to -end are kept (first windowed / catch-up backup). Defaults to now when -start is set and -end is empty
   -envflag.enable
      Whether to enable reading flags from environment variables in addition to the command line. Command line flag values have priority over values from environment vars. Flags are read only from the command line if this flag isn't set. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#environment-variables for more details
   -envflag.prefix string
@@ -367,6 +388,8 @@ Run `vmbackup -help` in order to see all the available options:
   -flagsAuthKey value
      Auth key for /flags endpoint. It must be passed via authKey query arg. It overrides -httpAuth.*
      Flag value can be read from the given file when using -flagsAuthKey=file:///abs/path/to/file or -flagsAuthKey=file://./relative/path/to/file . Flag value can be read from the given http/https url when using -flagsAuthKey=http://host/path or -flagsAuthKey=https://host/path
+  -forceMerge
+     Force-merge remaining parts on the snapshot copy before upload. When -start or -end is set, overlapping parts are always rewritten to trim samples outside [start, end). Default false
   -fs.disableMincore
      Whether to disable the mincore() syscall for checking mmap()ed files. By default, mincore() is used to detect whether mmap()ed file pages are resident in memory. Disabling mincore() may be needed on older ZFS filesystems (below 2.1.5), since it may trigger ZFS bug. See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/10327 for details.
   -fs.disableMmap
@@ -509,6 +532,8 @@ Run `vmbackup -help` in order to see all the available options:
      Optional TLS server name to use for connections to -snapshot.createURL. By default, the server name from -snapshot.createURL is used
   -snapshotName string
      Name for the snapshot to backup. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-work-with-snapshots. There is no need in setting -snapshotName if -snapshot.createURL is set
+  -start string
+     Optional lower bound of the backup window. Samples in [start, end) are kept; overlapping parts are rewritten on the snapshot copy. Time syntax matches the export/query API: RFC3339, Unix seconds/ms, or relative values such as now-1d. Unset with -end keeps samples from the beginning of the snapshot up to -end. Unset without -end keeps the current full-snapshot upload
   -storageDataPath string
      Path to VictoriaMetrics data. Must match -storageDataPath from VictoriaMetrics or vmstorage (default "victoria-metrics-data")
   -tls array

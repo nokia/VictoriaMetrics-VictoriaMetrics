@@ -42,6 +42,10 @@ var (
 	origin            = flag.String("origin", "", "Optional origin directory on the remote storage with old backup for server-side copying when performing full backup. This speeds up full backups")
 	concurrency       = flag.Int("concurrency", 10, "The number of concurrent workers. Higher concurrency may reduce backup duration")
 	maxBytesPerSecond = flagutil.NewBytes("maxBytesPerSecond", 0, "The maximum upload speed. There is no limit if it is set to 0")
+	start             = flag.String("start", "", "Optional lower bound of the backup window. Samples in [start, end) are kept; overlapping parts are rewritten on the snapshot copy. "+
+		"Time syntax matches the export/query API: RFC3339, Unix seconds/ms, or relative values such as now-1d. Unset with -end keeps samples from the beginning of the snapshot up to -end. Unset without -end keeps the current full-snapshot upload")
+	end        = flag.String("end", "", "Optional exclusive upper bound of the backup window. Same syntax as -start. When -start is empty, samples from the beginning of the snapshot up to -end are kept (first windowed / catch-up backup). Defaults to now when -start is set and -end is empty")
+	forceMerge = flag.Bool("forceMerge", false, "Force-merge remaining parts on the snapshot copy before upload. When -start or -end is set, overlapping parts are always rewritten to trim samples outside [start, end). Default false")
 )
 
 func main() {
@@ -65,6 +69,9 @@ func main() {
 	// calling deferred functions.
 	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2055
 	deleteSnapshot := func() {}
+	defer func() {
+		deleteSnapshot()
+	}()
 
 	if len(*snapshotCreateURL) > 0 {
 		// create net/url object
@@ -113,6 +120,7 @@ func main() {
 	pushmetrics.Init()
 	err := makeBackup(ctx)
 	deleteSnapshot()
+	deleteSnapshot = func() {}
 	if err != nil {
 		logger.Fatalf("cannot create backup: %s", err)
 	}
@@ -147,6 +155,9 @@ func makeBackup(ctx context.Context) error {
 		}
 		originFS.MustStop()
 	} else {
+		if err := applyWindowToSnapshot(ctx); err != nil {
+			return err
+		}
 		// Make backup from srcFS to -dst
 		srcFS, err := newSrcFS()
 		if err != nil {

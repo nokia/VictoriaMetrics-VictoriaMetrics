@@ -68,6 +68,13 @@ type Storage struct {
 	maxBackfillAgeMsecs         int64
 	denyQueriesOutsideRetention bool
 
+	// mergeTrim clips samples during merge to [mergeTrimMinTimestamp, mergeTrimMaxTimestamp).
+	// Used only by windowed backup on a snapshot copy. Atomic: backup goroutine
+	// writes these while merge workers may read them.
+	mergeTrimEnabled      atomic.Bool
+	mergeTrimMinTimestamp atomic.Int64
+	mergeTrimMaxTimestamp atomic.Int64
+
 	// lock file for exclusive access to the storage on the given path.
 	flockF *os.File
 
